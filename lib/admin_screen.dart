@@ -154,6 +154,10 @@ class AdminScreen extends ConsumerWidget {
                               ? '${timestamp.toDate().day}/${timestamp.toDate().month} - ${timestamp.toDate().hour}:${timestamp.toDate().minute.toString().padLeft(2, '0')}' 
                               : 'Pending...';
 
+                            // NEW: Dynamic color and prefix logic for Admin screen
+                            final profitColor = profit >= 0 ? Colors.green : Colors.redAccent;
+                            final profitPrefix = profit > 0 ? '+' : '';
+
                             return ListTile(
                               leading: CircleAvatar(
                                 backgroundColor: Theme.of(context).colorScheme.primaryContainer,
@@ -166,7 +170,7 @@ class AdminScreen extends ConsumerWidget {
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
                                   Text('${sale['final_price']} ETB', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                                  Text('+${profit.toStringAsFixed(0)} ETB margin', style: const TextStyle(color: Colors.green, fontSize: 12)),
+                                  Text('$profitPrefix${profit.toStringAsFixed(0)} ETB margin', style: TextStyle(color: profitColor, fontSize: 12)),
                                 ],
                               ),
                             );
