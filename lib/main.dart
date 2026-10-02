@@ -1,32 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'firebase_options.dart';
+
+import 'auth_providers.dart';
+import 'login_screen.dart';
 import 'worker_screen.dart';
+import 'admin_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize Firebase for the web using the generated options
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
   
-  // ProviderScope enables Riverpod globally
   runApp(const ProviderScope(child: Kiosk()));
 }
 
-// Replace the old StateProvider line with this modern Notifier structure:
 class ThemeModeNotifier extends Notifier<ThemeMode> {
   @override
   ThemeMode build() => ThemeMode.system;
-
   void toggleTheme() {
     state = state == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
   }
 }
-
 final themeModeProvider = NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
 
 class Kiosk extends ConsumerWidget {
@@ -34,35 +31,49 @@ class Kiosk extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Watch the theme provider to rebuild when toggled
     final themeMode = ref.watch(themeModeProvider);
 
-    return MaterialApp.router(
-      title: 'Kiosk',
+    return MaterialApp(
+      title: 'Kiosk POS',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.light(useMaterial3: true),
       darkTheme: ThemeData.dark(useMaterial3: true),
       themeMode: themeMode,
-      routerConfig: _router,
+      home: const AuthGate(), // The gatekeeper widget
     );
   }
 }
 
-// GoRouter handles the web URLs cleanly
-final _router = GoRouter(
-  initialLocation: '/worker', // Defaulting to worker for now
-  routes: [
-   GoRoute(
-  path: '/worker',
-  builder: (context, state) => const WorkerScreen(),
-),
-    GoRoute(
-      path: '/worker',
-      builder: (context, state) => const Scaffold(body: Center(child: Text('Worker Data Entry'))),
-    ),
-    GoRoute(
-      path: '/admin',
-      builder: (context, state) => const Scaffold(body: Center(child: Text('Admin Dashboard'))),
-    ),
-  ],
-);
+// Automatically routes the user based on their login status and role
+class AuthGate extends ConsumerWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final authState = ref.watch(authStateProvider);
+
+    return authState.when(
+      loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
+      error: (err, stack) => Scaffold(body: Center(child: Text('Auth Error: $err'))),
+      data: (user) {
+        if (user == null) {
+          return const LoginScreen(); // Not logged in
+        }
+
+        // User is logged in, now check their role
+        final roleAsync = ref.watch(userRoleProvider);
+
+        return roleAsync.when(
+          loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
+          error: (err, stack) => Scaffold(body: Center(child: Text('Role Error: $err'))),
+          data: (role) {
+            if (role == 'admin') {
+              return const AdminScreen(); 
+            }
+            return const WorkerScreen(); 
+          },
+        );
+      },
+    );
+  }
+}

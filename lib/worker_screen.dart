@@ -1,18 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'main.dart'; 
+import 'main.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 final inventoryProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
   return FirebaseFirestore.instance
       .collection('inventory')
       .where('is_active', isEqualTo: true)
       .snapshots()
-      .map((snapshot) => snapshot.docs.map((doc) {
-            final data = doc.data();
-            data['id'] = doc.id;
-            return data;
-          }).toList());
+      .map(
+        (snapshot) => snapshot.docs.map((doc) {
+          final data = doc.data();
+          data['id'] = doc.id;
+          return data;
+        }).toList(),
+      );
 });
 
 class WorkerScreen extends ConsumerStatefulWidget {
@@ -26,7 +29,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
   String? selectedItemId;
   final TextEditingController priceController = TextEditingController();
   String paymentMethod = 'Cash';
-  
+
   bool isSeeding = false;
   bool isSubmitting = false;
 
@@ -44,7 +47,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
       {"name": "Samsung 43-inch TV", "base_cost": 12000, "is_active": true},
       {"name": "Tecno Spark 20", "base_cost": 8500, "is_active": true},
       {"name": "HDMI Cable 2m", "base_cost": 150, "is_active": true},
-      {"name": "USB-C Charger", "base_cost": 300, "is_active": true}
+      {"name": "USB-C Charger", "base_cost": 300, "is_active": true},
     ];
 
     final settingsJson = {
@@ -59,7 +62,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
         item['id'] = docRef.id;
         await docRef.set(item);
       }
-      
+
       await db.collection('shop_settings').doc('config').set(settingsJson);
 
       if (mounted) {
@@ -113,7 +116,9 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Error: Price cannot be lower than the base cost ($baseCost ETB). Manager override required.'),
+              content: Text(
+                'Error: Price cannot be lower than the base cost ($baseCost ETB). Manager override required.',
+              ),
               backgroundColor: Colors.redAccent,
               behavior: SnackBarBehavior.floating,
               duration: const Duration(seconds: 4),
@@ -121,19 +126,24 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
           );
         }
         setState(() => isSubmitting = false);
-        return; 
+        return;
       }
+
+      // 1. Get the actual logged-in user
+      final currentUser = FirebaseAuth.instance.currentUser;
+      // Extract just the name part of the email (e.g., 'admin' from 'admin@kiosk.com')
+      final sellerName = currentUser?.email?.split('@')[0] ?? 'Unknown';
 
       await FirebaseFirestore.instance.collection('sales').add({
         'timestamp': FieldValue.serverTimestamp(),
-        'worker_id': 'worker_123', 
+        'worker_id': sellerName, // 2. UPDATED: No more hardcoded 'worker_123'
         'item_id': selectedItemId,
         'item_name': selectedItemData['name'],
         'base_cost': baseCost,
         'final_price': finalPrice,
         'payment_method': paymentMethod,
       });
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -177,11 +187,24 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
         scrolledUnderElevation: 2,
         actions: [
           IconButton(
-            icon: Icon(themeMode == ThemeMode.light ? Icons.dark_mode : Icons.light_mode),
+            icon: Icon(
+              themeMode == ThemeMode.light ? Icons.dark_mode : Icons.light_mode,
+            ),
             onPressed: () {
               ref.read(themeModeProvider.notifier).toggleTheme();
             },
             tooltip: 'Toggle Theme',
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              // 1. Clear any screens that were pushed on top (like the Admin's FAB click)
+              Navigator.of(context).popUntil((route) => route.isFirst);
+
+              // 2. Log out of Firebase
+              await FirebaseAuth.instance.signOut();
+            },
+            tooltip: 'Log Out',
           ),
           const SizedBox(width: 8),
         ],
@@ -197,18 +220,23 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                 Card(
                   elevation: 4,
                   shadowColor: Colors.black26,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.all(32.0),
                     child: inventoryAsync.when(
                       loading: () => const SizedBox(
-                        height: 200, 
-                        child: Center(child: CircularProgressIndicator())
+                        height: 200,
+                        child: Center(child: CircularProgressIndicator()),
                       ),
                       error: (err, stack) => Center(child: Text('Error: $err')),
                       data: (inventory) {
-                        if (selectedItemId != null && !inventory.any((item) => item['id'] == selectedItemId)) {
-                          selectedItemId = null; 
+                        if (selectedItemId != null &&
+                            !inventory.any(
+                              (item) => item['id'] == selectedItemId,
+                            )) {
+                          selectedItemId = null;
                         }
 
                         return Column(
@@ -216,27 +244,28 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                           children: [
                             Text(
                               'New Transaction',
-                              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
+                              style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(fontWeight: FontWeight.bold),
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 32),
-                            
+
                             // UPDATED DROPDOWN WITH PRICE DISPLAY
                             DropdownButtonFormField<String>(
-                              isExpanded: true, // Prevents overflow if item names are too long
+                              isExpanded:
+                                  true, // Prevents overflow if item names are too long
                               decoration: const InputDecoration(
                                 labelText: 'Select Item',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.inventory_2_outlined),
                               ),
-                              value: selectedItemId,
+                              initialValue: selectedItemId,
                               items: inventory.map((item) {
                                 return DropdownMenuItem<String>(
                                   value: item['id'] as String,
                                   child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
                                     children: [
                                       Expanded(
                                         child: Text(
@@ -248,17 +277,20 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                                         'Min: ${item['base_cost']} ETB',
                                         style: TextStyle(
                                           fontWeight: FontWeight.bold,
-                                          color: Theme.of(context).colorScheme.primary,
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.primary,
                                         ),
                                       ),
                                     ],
                                   ),
                                 );
                               }).toList(),
-                              onChanged: (val) => setState(() => selectedItemId = val),
+                              onChanged: (val) =>
+                                  setState(() => selectedItemId = val),
                             ),
                             const SizedBox(height: 20),
-                            
+
                             TextField(
                               controller: priceController,
                               keyboardType: TextInputType.number,
@@ -269,38 +301,56 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                               ),
                             ),
                             const SizedBox(height: 20),
-                            
+
                             DropdownButtonFormField<String>(
                               decoration: const InputDecoration(
                                 labelText: 'Payment Method',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.payment),
                               ),
-                              value: paymentMethod,
+                              initialValue: paymentMethod,
                               items: ['Cash', 'Telebirr', 'CBE Birr']
-                                  .map((method) => DropdownMenuItem(
-                                        value: method,
-                                        child: Text(method),
-                                      ))
+                                  .map(
+                                    (method) => DropdownMenuItem(
+                                      value: method,
+                                      child: Text(method),
+                                    ),
+                                  )
                                   .toList(),
-                              onChanged: (val) => setState(() => paymentMethod = val!),
+                              onChanged: (val) =>
+                                  setState(() => paymentMethod = val!),
                             ),
                             const SizedBox(height: 40),
-                            
+
                             FilledButton(
-                              onPressed: isSubmitting ? null : () => logSale(inventory),
+                              onPressed: isSubmitting
+                                  ? null
+                                  : () => logSale(inventory),
                               style: FilledButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 20),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 20,
+                                ),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                               ),
-                              child: isSubmitting 
-                                ? const SizedBox(
-                                    width: 24, height: 24, 
-                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
-                                  )
-                                : const Text('LOG SALE', style: TextStyle(fontSize: 16, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
+                              child: isSubmitting
+                                  ? const SizedBox(
+                                      width: 24,
+                                      height: 24,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'LOG SALE',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        letterSpacing: 1.2,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                             ),
                           ],
                         );
@@ -308,20 +358,28 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                     ),
                   ),
                 ),
-                
+
                 const SizedBox(height: 48),
-                
+
                 OutlinedButton.icon(
                   onPressed: isSeeding ? null : seedDatabase,
-                  icon: isSeeding 
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) 
-                    : const Icon(Icons.cloud_upload_outlined),
-                  label: Text(isSeeding ? 'Seeding Database...' : 'Dev: Seed Database with JSON'),
+                  icon: isSeeding
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cloud_upload_outlined),
+                  label: Text(
+                    isSeeding
+                        ? 'Seeding Database...'
+                        : 'Dev: Seed Database with JSON',
+                  ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.grey.shade500,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
-                )
+                ),
               ],
             ),
           ),
