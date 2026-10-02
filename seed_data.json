@@ -1,0 +1,22 @@
+{
+    "inventory": [
+      { "name": "Samsung 43-inch TV", "base_cost": 12000, "is_active": true },
+      { "name": "Tecno Spark 20", "base_cost": 8500, "is_active": true },
+      { "name": "HDMI Cable 2m", "base_cost": 150, "is_active": true },
+      { "name": "Phone Case", "base_cost": 100, "is_active": true }
+    ],
+    "shop_settings": {
+      "monthly_rent": 16000,
+      "yearly_tax": 150000,
+      "shop_name": "Kiosk Shop"
+    },
+    "sales":{
+        "item_id": "auto_generated_firestore_id_here",
+        "item_name": "Tecno Spark 20",
+        "base_cost": 8500,
+        "final_price": 9200,
+        "payment_method": "Telebirr",
+        "worker_id": "worker_123",
+        "timestamp": "October 2, 2026 at 7:53:00 AM UTC+3" 
+      }
+  }
