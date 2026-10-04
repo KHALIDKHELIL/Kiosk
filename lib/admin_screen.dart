@@ -1,28 +1,28 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'main.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'worker_screen.dart'; 
+import 'package:share_plus/share_plus.dart'; 
+import 'main.dart';
+import 'worker_screen.dart';
+import 'inventory_screen.dart';
 
-// Fetch shop settings (rent, tax)
-final shopSettingsProvider = StreamProvider<Map<String, dynamic>>((ref) {
-  return FirebaseFirestore.instance
-      .collection('shop_settings')
-      .doc('config')
-      .snapshots()
-      .map((doc) => doc.data() ?? {});
-});
-
-// Fetch all sales, ordered by newest
-final allSalesProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
-  return FirebaseFirestore.instance
-      .collection('sales')
-      .orderBy('timestamp', descending: true)
-      .snapshots()
+final adminAnalyticsProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
+  return FirebaseFirestore.instance.collection('sales').orderBy('timestamp', descending: true).snapshots()
       .map((snapshot) => snapshot.docs.map((doc) {
             final data = doc.data();
-            data['id'] = doc.id;
+            data['doc_id'] = doc.id; 
+            return data;
+          }).toList());
+});
+
+final adminExpensesProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
+  return FirebaseFirestore.instance.collection('expenses').orderBy('timestamp', descending: true).snapshots()
+      .map((snapshot) => snapshot.docs.map((doc) {
+            final data = doc.data();
+            data['doc_id'] = doc.id;
             return data;
           }).toList());
 });
@@ -30,187 +30,293 @@ final allSalesProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
 class AdminScreen extends ConsumerWidget {
   const AdminScreen({super.key});
 
+  final double dailyBreakEven = 1000.0; 
+
+  // ==========================================
+  // UNIVERSAL EXPORT (Works on Web & Android)
+  // ==========================================
+  Future<void> _exportToCSV(BuildContext context, List<Map<String, dynamic>> sales, List<Map<String, dynamic>> expenses) async {
+    try {
+      StringBuffer csvData = StringBuffer();
+      
+      csvData.writeln('--- SALES LEDGER ---');
+      csvData.writeln('Date,Time,Worker,Item,Quantity,Base Cost,Final Price,Margin,Payment Method');
+
+      for (var sale in sales) {
+        final ts = sale['timestamp'] as Timestamp?;
+        final date = ts != null ? '${ts.toDate().year}-${ts.toDate().month}-${ts.toDate().day}' : 'Pending';
+        final time = ts != null ? '${ts.toDate().hour}:${ts.toDate().minute}' : 'Pending';
+        final margin = (sale['final_price'] as num) - (sale['base_cost'] as num);
+        
+        csvData.writeln('$date,$time,${sale['worker_id']},${sale['item_name']},${sale['quantity'] ?? 1},${sale['base_cost']},${sale['final_price']},$margin,${sale['payment_method']}');
+      }
+
+      csvData.writeln('\n--- EXPENSE LEDGER ---');
+      csvData.writeln('Date,Time,Worker,Category,Amount,Reason');
+      
+      for (var exp in expenses) {
+        final ts = exp['timestamp'] as Timestamp?;
+        final date = ts != null ? '${ts.toDate().year}-${ts.toDate().month}-${ts.toDate().day}' : 'Pending';
+        final time = ts != null ? '${ts.toDate().hour}:${ts.toDate().minute}' : 'Pending';
+        
+        csvData.writeln('$date,$time,${exp['worker_id']},${exp['category']},${exp['amount']},${exp['reason']}');
+      }
+
+      // 1. Encode the text into memory bytes
+      final bytes = utf8.encode(csvData.toString());
+      
+      // 2. Create an XFile directly from memory (Bypasses dart:io and path_provider entirely)
+      final xFile = XFile.fromData(
+        Uint8List.fromList(bytes), 
+        mimeType: 'text/csv', 
+        name: 'Kiosk_Financial_Report_${DateTime.now().millisecondsSinceEpoch}.csv'
+      );
+      
+      // 3. Share it. Web will download it. Android will open the share sheet.
+      await Share.shareXFiles([xFile], text: 'Kiosk Financial Export');
+      
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export Failed: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _adminCancelSale(BuildContext context, String docId, String itemId, int qty) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel Sale?'),
+        content: const Text('This will delete the sale from your analytics and return the stock to inventory.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Back')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), style: FilledButton.styleFrom(backgroundColor: Colors.red), child: const Text('Delete Sale')),
+        ],
+      )
+    );
+
+    if (confirm == true) {
+      try {
+        await FirebaseFirestore.instance.collection('sales').doc(docId).delete();
+        await FirebaseFirestore.instance.collection('inventory').doc(itemId).set({
+          'stock_quantity': FieldValue.increment(qty)
+        }, SetOptions(merge: true));
+        
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sale cancelled & stock restored.'), backgroundColor: Colors.blue));
+      } catch (e) {
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  void _showExpensesLog(BuildContext context, WidgetRef ref) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Worker Expense Log'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: Consumer(
+            builder: (context, ref, child) {
+              final expensesAsync = ref.watch(adminExpensesProvider);
+              return expensesAsync.when(
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (err, stack) => Center(child: Text('Error: $err')),
+                data: (expenses) {
+                  if (expenses.isEmpty) return const Center(child: Text('No expenses logged yet.'));
+                  return ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: expenses.length,
+                    separatorBuilder: (ctx, i) => const Divider(),
+                    itemBuilder: (ctx, i) {
+                      final exp = expenses[i];
+                      final ts = exp['timestamp'] as Timestamp?;
+                      final dateStr = ts != null ? '${ts.toDate().day}/${ts.toDate().month} - ${ts.toDate().hour}:${ts.toDate().minute.toString().padLeft(2, '0')}' : 'Pending...';
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const CircleAvatar(backgroundColor: Colors.redAccent, child: Icon(Icons.money_off, color: Colors.white)),
+                        title: Text('${exp['amount']} ETB - ${exp['category']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text('By: ${exp['worker_id']} • $dateStr\nReason: ${exp['reason'] == '' ? 'None given' : exp['reason']}'),
+                        isThreeLine: true,
+                      );
+                    },
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))]
+      )
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final settingsAsync = ref.watch(shopSettingsProvider);
-    final salesAsync = ref.watch(allSalesProvider);
+    final salesAsync = ref.watch(adminAnalyticsProvider);
     final themeMode = ref.watch(themeModeProvider);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Kiosk - Admin Dashboard'),
+        title: const Text('Kiosk - Executive Dashboard'),
         centerTitle: true,
-        elevation: 0,
         actions: [
-          IconButton(
-            icon: Icon(themeMode == ThemeMode.light ? Icons.dark_mode : Icons.light_mode),
-            onPressed: () => ref.read(themeModeProvider.notifier).toggleTheme(),
-            tooltip: 'Toggle Theme',
-          ),
-         IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              // 1. Clear any screens that were pushed on top (like the Admin's FAB click)
-              Navigator.of(context).popUntil((route) => route.isFirst);
-              
-              // 2. Log out of Firebase
-              await FirebaseAuth.instance.signOut();
-            },
-            tooltip: 'Log Out',
-          ),
+          IconButton(icon: Icon(themeMode == ThemeMode.light ? Icons.dark_mode : Icons.light_mode), onPressed: () => ref.read(themeModeProvider.notifier).toggleTheme()),
+          IconButton(icon: const Icon(Icons.inventory_2), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const InventoryScreen()))),
+          IconButton(icon: const Icon(Icons.logout), onPressed: () async { Navigator.of(context).popUntil((r) => r.isFirst); await FirebaseAuth.instance.signOut(); }),
           const SizedBox(width: 8),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.push(context, MaterialPageRoute(builder: (context) => const WorkerScreen()));
-        },
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const WorkerScreen())),
         icon: const Icon(Icons.point_of_sale),
-        label: const Text('Log New Sale'),
+        label: const Text('Log Override Sale'),
       ),
-      body: settingsAsync.when(
+      body: salesAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (err, stack) => Center(child: Text('Settings Error: $err')),
-        data: (settings) {
-          return salesAsync.when(
+        error: (err, stack) => Center(child: Text('Error: $err')),
+        data: (sales) {
+          final expensesAsync = ref.watch(adminExpensesProvider);
+          
+          return expensesAsync.when(
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (err, stack) => Center(child: Text('Sales Error: $err')),
-            data: (sales) {
-              
-              // --- 1. CORE MATH & AGGREGATIONS ---
-              double totalRevenue = 0;
-              double totalBaseCost = 0;
-              
+            error: (err, stack) => Center(child: Text('Error: $err')),
+            data: (expenses) {
+              if (sales.isEmpty) return const Center(child: Text('No sales data yet.'));
+
+              DateTime oldestDate = DateTime.now();
+              double allTimeGrossMargin = 0;
+              double allTimeExpenses = 0;
+
+              for (var exp in expenses) {
+                allTimeExpenses += (exp['amount'] as num).toDouble();
+              }
+
               for (var sale in sales) {
-                totalRevenue += (sale['final_price'] as num?)?.toDouble() ?? 0;
-                totalBaseCost += (sale['base_cost'] as num?)?.toDouble() ?? 0;
-              }
-              
-              final double grossProfitAllTime = totalRevenue - totalBaseCost;
-
-              // Fixed Costs calculations
-              final double monthlyRent = (settings['monthly_rent'] as num?)?.toDouble() ?? 0;
-              final double yearlyTax = (settings['yearly_tax'] as num?)?.toDouble() ?? 0;
-              final double yearlyFixedCosts = (monthlyRent * 12) + yearlyTax;
-              final double dailyBreakEven = yearlyFixedCosts / 365;
-
-              // Run-rate calculations (Assuming 1 day active for now if no dates differ)
-              int daysActive = 1;
-              if (sales.isNotEmpty) {
-                final firstSaleTimestamp = sales.last['timestamp'] as Timestamp?;
-                if (firstSaleTimestamp != null) {
-                  final firstSaleDate = firstSaleTimestamp.toDate();
-                  final difference = DateTime.now().difference(firstSaleDate).inDays;
-                  daysActive = difference > 0 ? difference : 1;
+                final ts = sale['timestamp'] as Timestamp?;
+                if (ts != null) {
+                  if (ts.toDate().isBefore(oldestDate)) oldestDate = ts.toDate();
                 }
+                final margin = (sale['final_price'] as num) - (sale['base_cost'] as num);
+                allTimeGrossMargin += margin;
               }
 
-              final double avgDailyProfit = grossProfitAllTime / daysActive;
-              final double projectedYearlyNet = (avgDailyProfit * 365) - yearlyFixedCosts;
+              final todayCalendar = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+              final oldestCalendar = DateTime(oldestDate.year, oldestDate.month, oldestDate.day);
+              final daysActive = todayCalendar.difference(oldestCalendar).inDays + 1;
+              
+              final trueGrossAfterExpenses = allTimeGrossMargin - allTimeExpenses;
+              final avgDailyGross = trueGrossAfterExpenses / daysActive;
+              final avgDailyNetProfit = avgDailyGross - dailyBreakEven;
+              final projYearlyNetProfit = avgDailyNetProfit * 365;
 
-              // --- 2. UI RENDERING ---
-              return Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1000), // Wider for admin panels
-                  child: ListView(
-                    padding: const EdgeInsets.all(24.0),
+              return ListView(
+                padding: const EdgeInsets.all(24),
+                children: [
+                  Wrap(
+                    spacing: 16, runSpacing: 16, alignment: WrapAlignment.center,
                     children: [
-                      
-                      // METRICS GRID
-                      Wrap(
-                        spacing: 16,
-                        runSpacing: 16,
-                        alignment: WrapAlignment.center,
+                      _buildKpiCard(context, 'Daily Break-Even', '${dailyBreakEven.toStringAsFixed(0)} ETB', Icons.trending_flat, Colors.orange),
+                      _buildKpiCard(context, 'All-Time Expenses', '${allTimeExpenses.toStringAsFixed(0)} ETB', Icons.money_off, Colors.redAccent),
+                      _buildKpiCard(context, 'Gross (After Exp)', '${trueGrossAfterExpenses.toStringAsFixed(0)} ETB', Icons.account_balance_wallet, trueGrossAfterExpenses >= 0 ? Colors.green : Colors.red),
+                      _buildKpiCard(context, 'Avg Daily Net', '${avgDailyNetProfit.toStringAsFixed(0)} ETB', Icons.calendar_today, avgDailyNetProfit >= 0 ? Colors.blue : Colors.red),
+                      _buildKpiCard(context, 'Proj. Yearly Net', '${projYearlyNetProfit.toStringAsFixed(0)} ETB', Icons.account_balance, projYearlyNetProfit >= 0 ? Colors.purple : Colors.red),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+                  
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Transaction History', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+                      Row(
                         children: [
-                          _buildMetricCard(context, 'Daily Break-Even', '${dailyBreakEven.toStringAsFixed(0)} ETB', Icons.show_chart, Colors.orange),
-                          _buildMetricCard(context, 'Avg Daily Profit', '${avgDailyProfit.toStringAsFixed(0)} ETB', Icons.calendar_today, Colors.blue),
-                          _buildMetricCard(context, 'All-Time Gross Profit', '${grossProfitAllTime.toStringAsFixed(0)} ETB', Icons.account_balance_wallet, Colors.green),
-                          _buildMetricCard(context, 'Proj. Yearly Net Profit', '${projectedYearlyNet.toStringAsFixed(0)} ETB', Icons.account_balance, projectedYearlyNet >= 0 ? Colors.green : Colors.red),
+                          OutlinedButton.icon(onPressed: () => _showExpensesLog(context, ref), icon: const Icon(Icons.receipt_long, color: Colors.redAccent), label: const Text('View Expenses', style: TextStyle(color: Colors.redAccent))),
+                          const SizedBox(width: 12),
+                          OutlinedButton.icon(
+                            onPressed: () async {
+                              await _exportToCSV(context, sales, expenses);
+                            }, 
+                            icon: const Icon(Icons.ios_share), 
+                            label: const Text('Export Ledger')
+                          ),
                         ],
-                      ),
-                      
-                      const SizedBox(height: 40),
-                      
-                      Text(
-                        'Recent Transactions',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 16),
-                      
-                      // TRANSACTIONS FEED
-                      Card(
-                        elevation: 4,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: sales.take(10).length, // Show latest 10
-                          separatorBuilder: (context, index) => const Divider(height: 1),
-                          itemBuilder: (context, index) {
-                            final sale = sales[index];
-                            final profit = (sale['final_price'] as num) - (sale['base_cost'] as num);
-                            final timestamp = sale['timestamp'] as Timestamp?;
-                            final dateString = timestamp != null 
-                              ? '${timestamp.toDate().day}/${timestamp.toDate().month} - ${timestamp.toDate().hour}:${timestamp.toDate().minute.toString().padLeft(2, '0')}' 
-                              : 'Pending...';
+                      )
+                    ],
+                  ),
+                  const SizedBox(height: 16),
 
-                            // NEW: Dynamic color and prefix logic for Admin screen
-                            final profitColor = profit >= 0 ? Colors.green : Colors.redAccent;
-                            final profitPrefix = profit > 0 ? '+' : '';
+                  Card(
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: sales.take(100).length, 
+                      separatorBuilder: (ctx, i) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final sale = sales[index];
+                        final profit = (sale['final_price'] as num) - (sale['base_cost'] as num);
+                        final qty = sale['quantity'] ?? 1;
+                        
+                        final ts = sale['timestamp'] as Timestamp?;
+                        final dateString = ts != null ? '${ts.toDate().day}/${ts.toDate().month} - ${ts.toDate().hour}:${ts.toDate().minute.toString().padLeft(2, '0')}' : 'Pending...';
+                        
+                        final isLessThanAMonth = ts != null && DateTime.now().difference(ts.toDate()).inDays <= 30;
 
-                            return ListTile(
-                              leading: CircleAvatar(
-                                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                                child: const Icon(Icons.receipt_long, size: 20),
-                              ),
-                              title: Text(sale['item_name'] ?? 'Unknown Item', style: const TextStyle(fontWeight: FontWeight.bold)),
-                              subtitle: Text('Sold by: ${sale['worker_id']} • $dateString'),
-                              trailing: Column(
+                        return ListTile(
+                          leading: CircleAvatar(child: const Icon(Icons.receipt_long, size: 20)),
+                          title: Text('${qty > 1 ? '${qty}x ' : ''}${sale['item_name']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text('Sold by: ${sale['worker_id']} • $dateString'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
                                   Text('${sale['final_price']} ETB', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                                  Text('$profitPrefix${profit.toStringAsFixed(0)} ETB margin', style: TextStyle(color: profitColor, fontSize: 12)),
+                                  Text('${profit > 0 ? '+' : ''}${profit.toStringAsFixed(0)} ETB margin', style: TextStyle(color: profit >= 0 ? Colors.green : Colors.redAccent, fontSize: 12)),
                                 ],
                               ),
-                            );
-                          },
-                        ),
-                      )
-                    ],
-                  ),
-                ),
+                              if (isLessThanAMonth)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 12.0),
+                                  child: IconButton(
+                                    icon: const Icon(Icons.cancel, color: Colors.redAccent),
+                                    tooltip: 'Cancel Sale',
+                                    onPressed: () => _adminCancelSale(context, sale['doc_id'], sale['item_id'], qty),
+                                  ),
+                                )
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  )
+                ],
               );
-            },
+            }
           );
         },
       ),
     );
   }
 
-  // Helper widget for rendering standard stat cards
-  Widget _buildMetricCard(BuildContext context, String title, String value, IconData icon, Color iconColor) {
+  Widget _buildKpiCard(BuildContext context, String title, String value, IconData icon, Color color) {
     return Container(
-      width: 220,
+      width: 200, 
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 4))],
-      ),
+      decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3), borderRadius: BorderRadius.circular(16), border: Border.all(color: color.withOpacity(0.3))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(icon, color: iconColor, size: 28),
-              const Spacer(),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text(title, style: TextStyle(color: Theme.of(context).textTheme.bodySmall?.color, fontSize: 14)),
+          Icon(icon, color: color),
+          const SizedBox(height: 12),
+          Text(title, style: Theme.of(context).textTheme.bodyMedium),
           const SizedBox(height: 8),
-          Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+          Text(value, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
         ],
       ),
     );

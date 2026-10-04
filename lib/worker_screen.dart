@@ -5,10 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'main.dart';
 
 final inventoryProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
-  return FirebaseFirestore.instance
-      .collection('inventory')
-      .where('is_active', isEqualTo: true)
-      .snapshots()
+  return FirebaseFirestore.instance.collection('inventory').where('is_active', isEqualTo: true).snapshots()
       .map((snapshot) => snapshot.docs.map((doc) {
             final data = doc.data();
             data['id'] = doc.id;
@@ -17,17 +14,16 @@ final inventoryProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
 });
 
 final recentSalesProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
-  return FirebaseFirestore.instance
-      .collection('sales')
-      .orderBy('timestamp', descending: true)
-      .limit(200)
-      .snapshots()
-      .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
+  return FirebaseFirestore.instance.collection('sales').orderBy('timestamp', descending: true).limit(200).snapshots()
+      .map((snapshot) => snapshot.docs.map((doc) {
+            final data = doc.data();
+            data['doc_id'] = doc.id; 
+            return data;
+          }).toList());
 });
 
 class WorkerScreen extends ConsumerStatefulWidget {
   const WorkerScreen({super.key});
-
   @override
   ConsumerState<WorkerScreen> createState() => _WorkerScreenState();
 }
@@ -37,6 +33,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
   final TextEditingController priceController = TextEditingController();
   String paymentMethod = 'Cash';
   bool isSubmitting = false;
+  int quantity = 1;
 
   @override
   void dispose() {
@@ -46,9 +43,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
 
   Future<void> logSale(List<Map<String, dynamic>> currentInventory) async {
     if (selectedItemId == null || priceController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select an item and enter a price.'), behavior: SnackBarBehavior.floating),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select an item and price.'), backgroundColor: Colors.orange));
       return;
     }
 
@@ -59,32 +54,38 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
 
     try {
       final selectedItemData = currentInventory.firstWhere((item) => item['id'] == selectedItemId);
-      final baseCost = (selectedItemData['base_cost'] as num).toDouble();
+      final unitBaseCost = (selectedItemData['base_cost'] as num).toDouble();
       
+      final availableStock = (selectedItemData['stock_quantity'] as num?)?.toInt() ?? 0;
+      if (quantity > availableStock) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: Only $availableStock available.'), backgroundColor: Colors.red));
+        setState(() => isSubmitting = false);
+        return;
+      }
+
+      final totalBaseCost = unitBaseCost * quantity;
       final currentUser = FirebaseAuth.instance.currentUser;
       final sellerName = currentUser?.email?.split('@')[0] ?? 'Unknown';
 
       String userRole = 'worker';
       if (currentUser != null) {
         final userDoc = await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
-        if (userDoc.exists) {
-          userRole = userDoc.data()?['role'] ?? 'worker';
-        }
+        userRole = userDoc.data()?['role'] ?? 'worker';
       }
 
-      if (finalPrice < baseCost && userRole != 'admin') {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error: Price cannot be lower than the base cost ($baseCost ETB). Manager override required.'),
-              backgroundColor: Colors.redAccent,
-              behavior: SnackBarBehavior.floating,
-              duration: const Duration(seconds: 4),
-            ),
-          );
+      if (finalPrice < totalBaseCost) {
+        if (userRole != 'admin') {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: Minimum allowed price is $totalBaseCost ETB.'), backgroundColor: Colors.red));
+          setState(() => isSubmitting = false);
+          return;
+        } else {
+          final minAdminPrice = totalBaseCost * 0.5;
+          if (finalPrice < minAdminPrice) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Safety Lock: Admins cannot discount below 50% ($minAdminPrice ETB).'), backgroundColor: Colors.red));
+            setState(() => isSubmitting = false);
+            return;
+          }
         }
-        setState(() => isSubmitting = false);
-        return;
       }
 
       await FirebaseFirestore.instance.collection('sales').add({
@@ -92,38 +93,103 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
         'worker_id': sellerName,
         'item_id': selectedItemId,
         'item_name': selectedItemData['name'],
-        'base_cost': baseCost,
+        'base_cost': totalBaseCost, 
         'final_price': finalPrice,
+        'quantity': quantity,
         'payment_method': paymentMethod,
-        'is_loss_override': finalPrice < baseCost, 
+        'is_loss_override': finalPrice < totalBaseCost, 
       });
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(finalPrice < baseCost 
-                ? 'Admin Override: Sale logged at a loss.' 
-                : 'Sale logged successfully! Great job!'), 
-            backgroundColor: finalPrice < baseCost ? Colors.orange : Colors.green, 
-            behavior: SnackBarBehavior.floating
-          ),
-        );
-      }
-
-      setState(() {
-        selectedItemId = null;
-        priceController.clear();
-        paymentMethod = 'Cash';
+      await FirebaseFirestore.instance.collection('inventory').doc(selectedItemId).update({
+        'stock_quantity': FieldValue.increment(-quantity)
       });
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error logging sale: $e'), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating),
-        );
-      }
+
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(finalPrice < totalBaseCost ? 'Admin Override: Logged at a loss.' : 'Sale logged successfully!'), 
+        backgroundColor: finalPrice < totalBaseCost ? Colors.orange : Colors.green
+      ));
+
+      setState(() { selectedItemId = null; priceController.clear(); quantity = 1; });
     } finally {
       if (mounted) setState(() => isSubmitting = false);
     }
+  }
+
+  Future<void> voidTransaction(String? docId, String? itemId, int qty) async {
+    if (docId == null || itemId == null) return;
+    try {
+      await FirebaseFirestore.instance.collection('sales').doc(docId).delete();
+      await FirebaseFirestore.instance.collection('inventory').doc(itemId).set({
+        'stock_quantity': FieldValue.increment(qty)
+      }, SetOptions(merge: true));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transaction voided and stock returned.'), backgroundColor: Colors.blue));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error voiding: $e'), backgroundColor: Colors.red));
+    }
+  }
+
+  void _showExpenseDialog(double shopTodayProfit) {
+    String category = 'Food (Essential)';
+    final amountCtrl = TextEditingController();
+    final reasonCtrl = TextEditingController();
+    
+    showDialog(context: context, builder: (ctx) => StatefulBuilder(builder: (ctx, setDialogState) {
+      return AlertDialog(
+        title: const Text('Log Daily Expense'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DropdownButtonFormField<String>(
+              value: category,
+              decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()),
+              items: ['Food (Essential)', 'Transport (Essential)', 'Shop Supplies', 'Other']
+                  .map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              onChanged: (v) => setDialogState(() => category = v!),
+            ),
+            const SizedBox(height: 12),
+            TextField(controller: amountCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Amount (ETB)', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            TextField(controller: reasonCtrl, decoration: const InputDecoration(labelText: 'Specific Reason (Optional)', border: OutlineInputBorder())),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () async {
+              final amount = double.tryParse(amountCtrl.text) ?? 0;
+              if (amount <= 0) return;
+
+              final isEssential = category.contains('Essential');
+              // UPDATED: 1000 Break-Even + 500 Safety Buffer
+              final requiredSafeMargin = 1000 + 500; 
+
+              if (!isEssential && shopTodayProfit < requiredSafeMargin) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text('Declined: Shop profit (${shopTodayProfit.toStringAsFixed(0)} ETB) must be over $requiredSafeMargin ETB for non-essential expenses.'),
+                  backgroundColor: Colors.red,
+                  duration: const Duration(seconds: 5),
+                ));
+                return;
+              }
+
+              final currentUser = FirebaseAuth.instance.currentUser;
+              await FirebaseFirestore.instance.collection('expenses').add({
+                'timestamp': FieldValue.serverTimestamp(),
+                'worker_id': currentUser?.email?.split('@')[0] ?? 'Unknown',
+                'category': category,
+                'amount': amount,
+                'reason': reasonCtrl.text.trim(),
+              });
+              
+              if (ctx.mounted) Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Expense logged successfully.'), backgroundColor: Colors.green));
+            },
+            child: const Text('Submit Expense'),
+          )
+        ],
+      );
+    }));
   }
 
   @override
@@ -134,28 +200,14 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
 
     final currentUser = FirebaseAuth.instance.currentUser;
     final myWorkerId = currentUser?.email?.split('@')[0] ?? 'worker';
-    final workerName = myWorkerId.toUpperCase();
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Kiosk POS - $workerName'),
+        title: Text('Kiosk POS - ${myWorkerId.toUpperCase()}'),
         centerTitle: true,
-        elevation: 0,
-        scrolledUnderElevation: 2,
         actions: [
-          IconButton(
-            icon: Icon(themeMode == ThemeMode.light ? Icons.dark_mode : Icons.light_mode),
-            onPressed: () => ref.read(themeModeProvider.notifier).toggleTheme(),
-            tooltip: 'Toggle Theme',
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () async {
-              Navigator.of(context).popUntil((route) => route.isFirst);
-              await FirebaseAuth.instance.signOut();
-            },
-            tooltip: 'Log Out',
-          ),
+          IconButton(icon: Icon(themeMode == ThemeMode.light ? Icons.dark_mode : Icons.light_mode), onPressed: () => ref.read(themeModeProvider.notifier).toggleTheme()),
+          IconButton(icon: const Icon(Icons.logout), onPressed: () async { Navigator.of(context).popUntil((r) => r.isFirst); await FirebaseAuth.instance.signOut(); }),
           const SizedBox(width: 8),
         ],
       ),
@@ -164,84 +216,47 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
           padding: const EdgeInsets.all(24.0),
           child: salesAsync.when(
             loading: () => const CircularProgressIndicator(),
-            error: (err, stack) => Text('Error loading stats: $err'),
+            error: (err, stack) => Text('Error: $err'),
             data: (sales) {
-              final now = DateTime.now();
-              final today = DateTime(now.year, now.month, now.day);
+              final today = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
               
-              double myTodaySales = 0;
               double myTodayProfit = 0;
+              double shopTodayProfit = 0; 
               int myDealsToday = 0;
               
               Map<String, double> dailyLeaderboard = {};
               List<Map<String, dynamic>> teamWins = [];
-              
-              // NEW: Array to hold this specific worker's all-time recent sales
               List<Map<String, dynamic>> myRecentSales = [];
 
               for (var sale in sales) {
-                // Populate personal history list regardless of date
-                if (sale['worker_id'] == myWorkerId) {
-                  myRecentSales.add(sale);
-                }
+                if (sale['worker_id'] == myWorkerId) myRecentSales.add(sale);
 
                 final ts = sale['timestamp'] as Timestamp?;
                 final date = ts != null ? ts.toDate() : DateTime.now(); 
                 
-                // Today's metrics logic
                 if (date.isAfter(today) || date.isAtSameMomentAs(today)) {
                   teamWins.add(sale);
-                  
                   final worker = sale['worker_id'] ?? 'Unknown';
-                  final price = (sale['final_price'] as num?)?.toDouble() ?? 0;
-                  final cost = (sale['base_cost'] as num?)?.toDouble() ?? 0;
-                  final profit = price - cost;
+                  final profit = (sale['final_price'] as num) - (sale['base_cost'] as num);
 
+                  shopTodayProfit += profit;
                   dailyLeaderboard[worker] = (dailyLeaderboard[worker] ?? 0) + profit;
 
                   if (worker == myWorkerId) {
-                    myTodaySales += price;
                     myTodayProfit += profit;
                     myDealsToday++;
                   }
                 }
               }
 
-              final sortedLeaderboard = dailyLeaderboard.entries.toList()
-                ..sort((a, b) => b.value.compareTo(a.value));
-
-              final myProfitColor = myTodayProfit >= 0 ? Colors.green : Colors.redAccent;
-              final myProfitIcon = myTodayProfit >= 0 ? Icons.trending_up : Icons.trending_down;
-              final myProfitPrefix = myTodayProfit > 0 ? '+' : '';
-
-              // NEW: Strict Logic for the Motivation Banner
-              String motivationText = "Let's get that first sale!";
-              IconData motivationIcon = Icons.star_border;
-              Color motivationColor = Colors.grey;
-
-              if (myTodayProfit >= 500) {
-                motivationText = "You're on fire today!";
-                motivationIcon = Icons.local_fire_department;
-                motivationColor = Colors.orange;
-              } else if (myTodayProfit > 0) {
-                motivationText = "Great start! Keep pushing.";
-                motivationIcon = Icons.trending_up;
-                motivationColor = Colors.green;
-              } else if (myDealsToday > 0 && myTodayProfit <= 0) {
-                motivationText = "Push for a profitable margin!";
-                motivationIcon = Icons.warning_amber_rounded;
-                motivationColor = Colors.orange;
-              }
+              final sortedLeaderboard = dailyLeaderboard.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+              final motivationText = myTodayProfit >= 500 ? "You're on fire today!" : (myTodayProfit > 0 ? "Great start! Keep pushing." : "Push for a profitable margin!");
 
               return ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 1000),
                 child: Wrap(
-                  spacing: 24,
-                  runSpacing: 24,
-                  alignment: WrapAlignment.center,
+                  spacing: 24, runSpacing: 24, alignment: WrapAlignment.center,
                   children: [
-                    
-                    // LEFT COLUMN: MOTIVATION & LEADERBOARD
                     SizedBox(
                       width: 350,
                       child: Column(
@@ -249,107 +264,49 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                         children: [
                           Card(
                             elevation: 0,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
-                              side: BorderSide(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
-                            ),
                             color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.2),
                             child: Padding(
                               padding: const EdgeInsets.all(20.0),
                               child: Column(
                                 children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(motivationIcon, color: motivationColor),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        motivationText,
-                                        style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                                      ),
-                                    ],
-                                  ),
+                                  Text(motivationText, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
                                   const SizedBox(height: 16),
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                                     children: [
-                                      _buildStatColumn(context, 'Deals', '$myDealsToday', Icons.handshake),
-                                      _buildStatColumn(context, 'Revenue', '${myTodaySales.toStringAsFixed(0)}', Icons.payments),
-                                      _buildStatColumn(
-                                        context, 
-                                        'Margin', 
-                                        '$myProfitPrefix${myTodayProfit.toStringAsFixed(0)}', 
-                                        myProfitIcon, 
-                                        highlightColor: myProfitColor
-                                      ),
+                                      Column(children: [ const Icon(Icons.handshake, color: Colors.blue), Text('$myDealsToday', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)), const Text('Deals') ]),
+                                      Column(children: [ const Icon(Icons.trending_up, color: Colors.green), Text('${myTodayProfit.toStringAsFixed(0)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)), const Text('Margin') ]),
                                     ],
                                   ),
                                   const SizedBox(height: 16),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text('Daily Target (500 ETB)', style: Theme.of(context).textTheme.bodySmall),
-                                      const SizedBox(height: 4),
-                                      LinearProgressIndicator(
-                                        value: (myTodayProfit / 500).clamp(0.0, 1.0),
-                                        backgroundColor: Colors.grey.withOpacity(0.2),
-                                        color: Colors.green,
-                                        borderRadius: BorderRadius.circular(4),
-                                        minHeight: 8,
-                                      ),
-                                    ],
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: OutlinedButton.icon(
+                                      onPressed: () => _showExpenseDialog(shopTodayProfit),
+                                      icon: const Icon(Icons.receipt_long, size: 18),
+                                      label: const Text('Log Business Expense'),
+                                    ),
                                   )
                                 ],
                               ),
                             ),
                           ),
                           const SizedBox(height: 16),
-                          
                           Card(
                             elevation: 2,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                             child: Padding(
                               padding: const EdgeInsets.all(16.0),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.emoji_events, color: Colors.amber),
-                                      const SizedBox(width: 8),
-                                      Text("Today's Top Sellers", style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
-                                    ],
-                                  ),
+                                  const Text("Today's Top Sellers", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                                   const Divider(),
-                                  if (sortedLeaderboard.isEmpty)
-                                    const Padding(
-                                      padding: EdgeInsets.symmetric(vertical: 16),
-                                      child: Text("No sales yet today. Be the first!"),
-                                    ),
                                   ...sortedLeaderboard.asMap().entries.map((entry) {
-                                    final rank = entry.key + 1;
-                                    final worker = entry.value.key;
-                                    final profit = entry.value.value;
-                                    
-                                    final profitColor = profit >= 0 ? Colors.green : Colors.redAccent;
-                                    final profitPrefix = profit > 0 ? '+' : '';
-
-                                    Color medalColor = Colors.grey;
-                                    if (rank == 1) medalColor = Colors.amber;
-                                    if (rank == 2) medalColor = Colors.blueGrey;
-                                    if (rank == 3) medalColor = Colors.brown.shade300;
-
                                     return ListTile(
                                       contentPadding: EdgeInsets.zero,
-                                      leading: CircleAvatar(
-                                        backgroundColor: medalColor.withOpacity(0.2),
-                                        child: Text('#$rank', style: TextStyle(color: medalColor, fontWeight: FontWeight.bold)),
-                                      ),
-                                      title: Text(worker == myWorkerId ? '$worker (You)' : worker, 
-                                        style: TextStyle(fontWeight: worker == myWorkerId ? FontWeight.bold : FontWeight.normal)
-                                      ),
-                                      trailing: Text('$profitPrefix${profit.toStringAsFixed(0)} ETB', 
-                                        style: TextStyle(color: profitColor, fontWeight: FontWeight.bold)),
+                                      leading: CircleAvatar(child: Text('#${entry.key + 1}')),
+                                      title: Text(entry.value.key),
+                                      trailing: Text('+${entry.value.value.toStringAsFixed(0)} ETB', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
                                     );
                                   }),
                                 ],
@@ -357,7 +314,8 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                             ),
                           ),
                           const SizedBox(height: 16),
-
+                          
+                          // RESTORED: LIVE TEAM FEED
                           Card(
                             elevation: 1,
                             color: Theme.of(context).scaffoldBackgroundColor,
@@ -373,9 +331,11 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                                     const Text("Waiting for incoming deals...", style: TextStyle(fontSize: 12, color: Colors.grey)),
                                   ...teamWins.take(3).map((win) {
                                     final profit = (win['final_price'] as num) - (win['base_cost'] as num);
-                                    
                                     final profitColor = profit >= 0 ? Colors.green : Colors.redAccent;
                                     final profitPrefix = profit > 0 ? '+' : '';
+                                    
+                                    final qty = win['quantity'] ?? 1;
+                                    final qtyString = qty > 1 ? '${qty}x ' : '';
 
                                     return Padding(
                                       padding: const EdgeInsets.only(bottom: 8.0),
@@ -385,7 +345,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                                           const SizedBox(width: 4),
                                           Expanded(
                                             child: Text(
-                                              "${win['worker_id']} sold a ${win['item_name']}",
+                                              "${win['worker_id']} sold $qtyString${win['item_name']}",
                                               style: const TextStyle(fontSize: 12),
                                               overflow: TextOverflow.ellipsis,
                                             ),
@@ -404,90 +364,71 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                       ),
                     ),
 
-                    // RIGHT COLUMN: POS FORM & PERSONAL TRANSACTIONS
                     SizedBox(
                       width: 450,
                       child: Column(
                         children: [
                           Card(
                             elevation: 4,
-                            shadowColor: Colors.black26,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                             child: Padding(
                               padding: const EdgeInsets.all(32.0),
                               child: inventoryAsync.when(
                                 loading: () => const SizedBox(height: 200, child: Center(child: CircularProgressIndicator())),
                                 error: (err, stack) => Center(child: Text('Error: $err')),
                                 data: (inventory) {
-                                  if (selectedItemId != null && !inventory.any((item) => item['id'] == selectedItemId)) {
-                                    selectedItemId = null;
-                                  }
+                                  if (selectedItemId != null && !inventory.any((i) => i['id'] == selectedItemId)) selectedItemId = null;
+                                  int maxStock = selectedItemId != null ? (inventory.firstWhere((i) => i['id'] == selectedItemId)['stock_quantity'] as num?)?.toInt() ?? 0 : 0;
 
                                   return Column(
                                     crossAxisAlignment: CrossAxisAlignment.stretch,
                                     children: [
-                                      Text(
-                                        'New Transaction',
-                                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                      const SizedBox(height: 32),
+                                      const Text('New Transaction', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                                      const SizedBox(height: 24),
                                       DropdownButtonFormField<String>(
                                         isExpanded: true,
-                                        decoration: const InputDecoration(
-                                          labelText: 'Select Item',
-                                          border: OutlineInputBorder(),
-                                          prefixIcon: Icon(Icons.inventory_2_outlined),
-                                        ),
+                                        decoration: const InputDecoration(labelText: 'Select Item', border: OutlineInputBorder()),
                                         value: selectedItemId,
                                         items: inventory.map((item) {
                                           return DropdownMenuItem<String>(
                                             value: item['id'] as String,
-                                            child: Row(
-                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                              children: [
-                                                Expanded(child: Text(item['name'] as String, overflow: TextOverflow.ellipsis)),
-                                                Text('Min: ${item['base_cost']} ETB',
-                                                    style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary)),
-                                              ],
-                                            ),
+                                            child: Text("${item['name']} (Min: ${item['base_cost']} | Stock: ${item['stock_quantity']})", style: TextStyle(color: item['stock_quantity'] <= 0 ? Colors.red : null)),
                                           );
                                         }).toList(),
-                                        onChanged: (val) => setState(() => selectedItemId = val),
+                                        onChanged: (val) => setState(() { selectedItemId = val; quantity = 1; }),
                                       ),
                                       const SizedBox(height: 20),
-                                      TextField(
-                                        controller: priceController,
-                                        keyboardType: TextInputType.number,
-                                        decoration: const InputDecoration(
-                                          labelText: 'Final Sale Price (ETB)',
-                                          border: OutlineInputBorder(),
-                                          prefixIcon: Icon(Icons.attach_money),
-                                        ),
+                                      Row(
+                                        children: [
+                                          Expanded(flex: 2, child: TextField(controller: priceController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Total Sale Price', border: OutlineInputBorder()))),
+                                          const SizedBox(width: 16),
+                                          Expanded(
+                                            flex: 1,
+                                            child: Container(
+                                              height: 60, decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(4)),
+                                              child: Row(
+                                                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                                children: [
+                                                  IconButton(icon: const Icon(Icons.remove, size: 20), onPressed: quantity > 1 ? () => setState(() => quantity--) : null),
+                                                  Text('$quantity', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                                                  IconButton(icon: const Icon(Icons.add, size: 20), onPressed: (selectedItemId != null && quantity < maxStock) ? () => setState(() => quantity++) : null),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                       const SizedBox(height: 20),
                                       DropdownButtonFormField<String>(
-                                        decoration: const InputDecoration(
-                                          labelText: 'Payment Method',
-                                          border: OutlineInputBorder(),
-                                          prefixIcon: Icon(Icons.payment),
-                                        ),
+                                        decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder()),
                                         value: paymentMethod,
-                                        items: ['Cash', 'Telebirr', 'CBE Birr']
-                                            .map((method) => DropdownMenuItem(value: method, child: Text(method)))
-                                            .toList(),
+                                        items: ['Cash', 'Telebirr', 'CBE Birr'].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
                                         onChanged: (val) => setState(() => paymentMethod = val!),
                                       ),
-                                      const SizedBox(height: 40),
+                                      const SizedBox(height: 32),
                                       FilledButton(
                                         onPressed: isSubmitting ? null : () => logSale(inventory),
-                                        style: FilledButton.styleFrom(
-                                          padding: const EdgeInsets.symmetric(vertical: 20),
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                        ),
-                                        child: isSubmitting
-                                            ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                                            : const Text('LOG SALE', style: TextStyle(fontSize: 16, letterSpacing: 1.2, fontWeight: FontWeight.bold)),
+                                        style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 20)),
+                                        child: isSubmitting ? const CircularProgressIndicator(color: Colors.white) : const Text('LOG SALE', style: TextStyle(fontWeight: FontWeight.bold)),
                                       ),
                                     ],
                                   );
@@ -495,50 +436,46 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                               ),
                             ),
                           ),
-                          
                           const SizedBox(height: 24),
                           
-                          // NEW: Personal Recent Transactions List
                           Card(
                             elevation: 2,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                             child: Padding(
                               padding: const EdgeInsets.all(24.0),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.history),
-                                      const SizedBox(width: 8),
-                                      Text("My Recent Sales", style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
-                                    ],
-                                  ),
+                                  const Text("My Recent Sales", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                                   const Divider(height: 24),
-                                  if (myRecentSales.isEmpty)
-                                    const Text("You haven't logged any sales yet.", style: TextStyle(color: Colors.grey)),
                                   ...myRecentSales.take(5).map((sale) {
                                     final profit = (sale['final_price'] as num) - (sale['base_cost'] as num);
-                                    final pColor = profit >= 0 ? Colors.green : Colors.redAccent;
-                                    final pPrefix = profit > 0 ? '+' : '';
-                                    
+                                    final qty = sale['quantity'] ?? 1;
                                     final ts = sale['timestamp'] as Timestamp?;
-                                    final dateStr = ts != null 
-                                      ? '${ts.toDate().day}/${ts.toDate().month} - ${ts.toDate().hour}:${ts.toDate().minute.toString().padLeft(2, '0')}' 
-                                      : 'Pending...';
+                                    
+                                    final isRecent = ts != null && DateTime.now().difference(ts.toDate()).inMinutes <= 15;
 
                                     return ListTile(
                                       contentPadding: EdgeInsets.zero,
-                                      title: Text(sale['item_name'] ?? 'Unknown Item', style: const TextStyle(fontWeight: FontWeight.bold)),
-                                      subtitle: Text(dateStr),
-                                      trailing: Column(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        crossAxisAlignment: CrossAxisAlignment.end,
-                                        children: [
-                                          Text('${sale['final_price']} ETB', style: const TextStyle(fontWeight: FontWeight.bold)),
-                                          Text('$pPrefix${profit.toStringAsFixed(0)} ETB margin', style: TextStyle(color: pColor, fontSize: 12)),
-                                        ],
-                                      ),
+                                      title: Text('${qty > 1 ? '${qty}x ' : ''}${sale['item_name']}'),
+                                      subtitle: Text('${sale['final_price']} ETB (Margin: $profit)'),
+                                      trailing: isRecent ? IconButton(
+                                        icon: const Icon(Icons.delete_forever, color: Colors.red),
+                                        tooltip: 'Void Transaction',
+                                        onPressed: () async {
+                                          final confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (ctx) => AlertDialog(
+                                              title: const Text('Void Transaction?'),
+                                              content: const Text('Are you sure you want to void this sale?'),
+                                              actions: [
+                                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+                                                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes')),
+                                              ],
+                                            )
+                                          );
+                                          if (confirm == true) voidTransaction(sale['doc_id'], sale['item_id'], qty);
+                                        },
+                                      ) : const SizedBox(),
                                     );
                                   }),
                                 ],
@@ -555,24 +492,6 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildStatColumn(BuildContext context, String label, String value, IconData icon, {Color? highlightColor}) {
-    return Column(
-      children: [
-        Icon(icon, size: 20, color: Theme.of(context).colorScheme.secondary),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            color: highlightColor,
-          ),
-        ),
-        Text(label, style: Theme.of(context).textTheme.bodySmall),
-      ],
     );
   }
 }
