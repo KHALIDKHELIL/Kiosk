@@ -1,0 +1,10 @@
+{
+    "users": {
+      "fake_admin_uid_12345": {
+        "role": "admin"
+      },
+      "fake_worker_uid_67890": {
+        "role": "worker"
+      }
+    }
+  }

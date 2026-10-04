@@ -134,7 +134,7 @@ class InventoryScreen extends ConsumerWidget {
                           Text('All active inventory', style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
                         ],
                       ),
-                      Container(width: 1, height: 50, color: Colors.grey.withOpacity(0.3)),
+                      Container(width: 1, height: 50, color: Colors.grey.withValues( alpha:0.3)),
                       Column(
                         children: [
                           Text('Low Stock Value', style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.orange.shade700)),
@@ -176,8 +176,8 @@ class InventoryScreen extends ConsumerWidget {
     final qty = item['stock_quantity'] as int;
     return Card(
       elevation: isLowStock ? 2 : 0,
-      color: isLowStock ? Colors.orange.withOpacity(0.1) : Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: isLowStock ? BorderSide(color: Colors.orange.withOpacity(0.5)) : BorderSide.none),
+      color: isLowStock ? Colors.orange.withValues( alpha:0.1) : Theme.of(context).colorScheme.surfaceContainerHighest.withValues( alpha:0.3),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: isLowStock ? BorderSide(color: Colors.orange.withValues( alpha:0.5)) : BorderSide.none),
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         title: Text(item['name'], style: const TextStyle(fontWeight: FontWeight.bold)),

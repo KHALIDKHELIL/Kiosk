@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'; 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -75,7 +74,12 @@ class AdminScreen extends ConsumerWidget {
         name: 'Kiosk_Financial_Report_${DateTime.now().millisecondsSinceEpoch}.csv'
       );
       
-      await Share.shareXFiles([xFile], text: 'Kiosk Financial Export');
+      await SharePlus.instance.share(
+  ShareParams(
+    files: [xFile],
+    text: 'Kiosk Financial Export',
+  ),
+);
       
     } catch (e) {
       if (context.mounted) {
@@ -310,7 +314,7 @@ class AdminScreen extends ConsumerWidget {
     return Container(
       width: 200, 
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3), borderRadius: BorderRadius.circular(16), border: Border.all(color: color.withOpacity(0.3))),
+      decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues( alpha:0.3), borderRadius: BorderRadius.circular(16), border: Border.all(color: color.withValues( alpha:0.3))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

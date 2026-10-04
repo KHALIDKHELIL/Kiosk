@@ -77,12 +77,14 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
 
       if (finalPrice < totalBaseCost) {
         if (userRole != 'admin') {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: Minimum allowed price is $totalBaseCost ETB.'), backgroundColor: Colors.red));
           setState(() => isSubmitting = false);
           return;
         } else {
           final minAdminPrice = totalBaseCost * 0.5;
           if (finalPrice < minAdminPrice) {
+            if (!mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Safety Lock: Admins cannot discount below 50% ($minAdminPrice ETB).'), backgroundColor: Colors.red));
             setState(() => isSubmitting = false);
             return;
@@ -118,6 +120,8 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
         "💳 Method: $paymentMethod"
       );
 
+
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(finalPrice < totalBaseCost ? 'Admin Override: Logged at a loss.' : 'Sale logged successfully!'), 
         backgroundColor: finalPrice < totalBaseCost ? Colors.orange : Colors.green
@@ -165,7 +169,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             DropdownButtonFormField<String>(
-              value: category,
+              initialValue: category,
               decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()),
               items: ['Food (Essential)', 'Transport (Essential)', 'Shop Supplies', 'Other']
                   .map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
@@ -220,6 +224,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
               );
               
               if (ctx.mounted) Navigator.pop(ctx);
+              if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Expense logged successfully.'), backgroundColor: Colors.green));
             },
             child: const Text('Submit Expense'),
@@ -301,7 +306,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                         children: [
                           Card(
                             elevation: 0,
-                            color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.2),
+                            color: Theme.of(context).colorScheme.primaryContainer.withValues( alpha:0.2),
                             child: Padding(
                               padding: const EdgeInsets.all(20.0),
                               child: Column(
@@ -312,7 +317,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                                     mainAxisAlignment: MainAxisAlignment.spaceAround,
                                     children: [
                                       Column(children: [ const Icon(Icons.handshake, color: Colors.blue), Text('$myDealsToday', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)), const Text('Deals') ]),
-                                      Column(children: [ const Icon(Icons.trending_up, color: Colors.green), Text('${myTodayProfit.toStringAsFixed(0)}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)), const Text('Margin') ]),
+                                      Column(children: [ const Icon(Icons.trending_up, color: Colors.green), Text(myTodayProfit.toStringAsFixed(0), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)), const Text('Margin') ]),
                                     ],
                                   ),
                                   const SizedBox(height: 16),
@@ -355,7 +360,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                           Card(
                             elevation: 1,
                             color: Theme.of(context).scaffoldBackgroundColor,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.withOpacity(0.2))),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.withValues( alpha:0.2))),
                             child: Padding(
                               padding: const EdgeInsets.all(12.0),
                               child: Column(
@@ -510,7 +515,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                                       const SizedBox(height: 20),
                                       DropdownButtonFormField<String>(
                                         decoration: const InputDecoration(labelText: 'Payment Method', border: OutlineInputBorder()),
-                                        value: paymentMethod,
+                                        initialValue: paymentMethod,
                                         items: ['Cash', 'Telebirr', 'CBE Birr'].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
                                         onChanged: (val) => setState(() => paymentMethod = val!),
                                       ),
