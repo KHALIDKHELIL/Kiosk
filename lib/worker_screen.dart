@@ -30,6 +30,7 @@ class WorkerScreen extends ConsumerStatefulWidget {
 
 class _WorkerScreenState extends ConsumerState<WorkerScreen> {
   String? selectedItemId;
+  TextEditingController? searchController; // NEW: Controls the Search field
   final TextEditingController priceController = TextEditingController();
   String paymentMethod = 'Cash';
   bool isSubmitting = false;
@@ -109,7 +110,12 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
         backgroundColor: finalPrice < totalBaseCost ? Colors.orange : Colors.green
       ));
 
-      setState(() { selectedItemId = null; priceController.clear(); quantity = 1; });
+      setState(() { 
+        selectedItemId = null; 
+        priceController.clear(); 
+        searchController?.clear(); // Clears the search box
+        quantity = 1; 
+      });
     } finally {
       if (mounted) setState(() => isSubmitting = false);
     }
@@ -160,7 +166,6 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
               if (amount <= 0) return;
 
               final isEssential = category.contains('Essential');
-              // UPDATED: 1000 Break-Even + 500 Safety Buffer
               final requiredSafeMargin = 1000 + 500; 
 
               if (!isEssential && shopTodayProfit < requiredSafeMargin) {
@@ -315,7 +320,6 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                           ),
                           const SizedBox(height: 16),
                           
-                          // RESTORED: LIVE TEAM FEED
                           Card(
                             elevation: 1,
                             color: Theme.of(context).scaffoldBackgroundColor,
@@ -384,17 +388,74 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                                     children: [
                                       const Text('New Transaction', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                                       const SizedBox(height: 24),
-                                      DropdownButtonFormField<String>(
-                                        isExpanded: true,
-                                        decoration: const InputDecoration(labelText: 'Select Item', border: OutlineInputBorder()),
-                                        value: selectedItemId,
-                                        items: inventory.map((item) {
-                                          return DropdownMenuItem<String>(
-                                            value: item['id'] as String,
-                                            child: Text("${item['name']} (Min: ${item['base_cost']} | Stock: ${item['stock_quantity']})", style: TextStyle(color: item['stock_quantity'] <= 0 ? Colors.red : null)),
+                                      
+                                      // ==========================================
+                                      // SEARCHABLE INVENTORY UPGRADE
+                                      // ==========================================
+                                      Autocomplete<Map<String, dynamic>>(
+                                        displayStringForOption: (item) => item['name'] as String,
+                                        optionsBuilder: (TextEditingValue textEditingValue) {
+                                          if (textEditingValue.text.isEmpty) return inventory;
+                                          return inventory.where((item) {
+                                            return (item['name'] as String).toLowerCase().contains(textEditingValue.text.toLowerCase());
+                                          });
+                                        },
+                                        onSelected: (Map<String, dynamic> selection) {
+                                          setState(() {
+                                            selectedItemId = selection['id'];
+                                            quantity = 1;
+                                          });
+                                        },
+                                        fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+                                          searchController = textEditingController;
+                                          return TextFormField(
+                                            controller: textEditingController,
+                                            focusNode: focusNode,
+                                            decoration: InputDecoration(
+                                              labelText: 'Search & Select Item',
+                                              border: const OutlineInputBorder(),
+                                              prefixIcon: const Icon(Icons.search),
+                                              suffixIcon: selectedItemId != null 
+                                                ? IconButton(
+                                                    icon: const Icon(Icons.clear),
+                                                    onPressed: () {
+                                                      textEditingController.clear();
+                                                      setState(() => selectedItemId = null);
+                                                    },
+                                                  )
+                                                : null,
+                                            ),
+                                            onChanged: (val) {
+                                              if (selectedItemId != null) setState(() => selectedItemId = null);
+                                            },
                                           );
-                                        }).toList(),
-                                        onChanged: (val) => setState(() { selectedItemId = val; quantity = 1; }),
+                                        },
+                                        optionsViewBuilder: (context, onSelected, options) {
+                                          return Align(
+                                            alignment: Alignment.topLeft,
+                                            child: Material(
+                                              elevation: 4,
+                                              shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(bottom: Radius.circular(8))),
+                                              child: ConstrainedBox(
+                                                constraints: const BoxConstraints(maxHeight: 250, maxWidth: 386),
+                                                child: ListView.builder(
+                                                  padding: EdgeInsets.zero,
+                                                  itemCount: options.length,
+                                                  itemBuilder: (context, index) {
+                                                    final item = options.elementAt(index);
+                                                    final qty = item['stock_quantity'] ?? 0;
+                                                    return ListTile(
+                                                      title: Text(item['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                                                      subtitle: Text('Min: ${item['base_cost']} ETB | Stock: $qty',
+                                                          style: TextStyle(color: qty <= 0 ? Colors.red : Theme.of(context).colorScheme.primary)),
+                                                      onTap: () => onSelected(item),
+                                                    );
+                                                  },
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        },
                                       ),
                                       const SizedBox(height: 20),
                                       Row(

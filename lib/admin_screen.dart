@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'; 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -32,10 +33,14 @@ class AdminScreen extends ConsumerWidget {
 
   final double dailyBreakEven = 1000.0; 
 
-  // ==========================================
-  // UNIVERSAL EXPORT (Works on Web & Android)
-  // ==========================================
   Future<void> _exportToCSV(BuildContext context, List<Map<String, dynamic>> sales, List<Map<String, dynamic>> expenses) async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Web Export blocked. Please run the app on an Android device to use the CSV Exporter.'), backgroundColor: Colors.orange)
+      );
+      return;
+    }
+
     try {
       StringBuffer csvData = StringBuffer();
       
@@ -44,8 +49,9 @@ class AdminScreen extends ConsumerWidget {
 
       for (var sale in sales) {
         final ts = sale['timestamp'] as Timestamp?;
-        final date = ts != null ? '${ts.toDate().year}-${ts.toDate().month}-${ts.toDate().day}' : 'Pending';
-        final time = ts != null ? '${ts.toDate().hour}:${ts.toDate().minute}' : 'Pending';
+        // UPDATED: Zero-padded dates for Excel parsing
+        final date = ts != null ? '${ts.toDate().year}-${ts.toDate().month.toString().padLeft(2, '0')}-${ts.toDate().day.toString().padLeft(2, '0')}' : 'Pending';
+        final time = ts != null ? '${ts.toDate().hour.toString().padLeft(2, '0')}:${ts.toDate().minute.toString().padLeft(2, '0')}' : 'Pending';
         final margin = (sale['final_price'] as num) - (sale['base_cost'] as num);
         
         csvData.writeln('$date,$time,${sale['worker_id']},${sale['item_name']},${sale['quantity'] ?? 1},${sale['base_cost']},${sale['final_price']},$margin,${sale['payment_method']}');
@@ -56,23 +62,19 @@ class AdminScreen extends ConsumerWidget {
       
       for (var exp in expenses) {
         final ts = exp['timestamp'] as Timestamp?;
-        final date = ts != null ? '${ts.toDate().year}-${ts.toDate().month}-${ts.toDate().day}' : 'Pending';
-        final time = ts != null ? '${ts.toDate().hour}:${ts.toDate().minute}' : 'Pending';
+        final date = ts != null ? '${ts.toDate().year}-${ts.toDate().month.toString().padLeft(2, '0')}-${ts.toDate().day.toString().padLeft(2, '0')}' : 'Pending';
+        final time = ts != null ? '${ts.toDate().hour.toString().padLeft(2, '0')}:${ts.toDate().minute.toString().padLeft(2, '0')}' : 'Pending';
         
         csvData.writeln('$date,$time,${exp['worker_id']},${exp['category']},${exp['amount']},${exp['reason']}');
       }
 
-      // 1. Encode the text into memory bytes
       final bytes = utf8.encode(csvData.toString());
-      
-      // 2. Create an XFile directly from memory (Bypasses dart:io and path_provider entirely)
       final xFile = XFile.fromData(
         Uint8List.fromList(bytes), 
         mimeType: 'text/csv', 
         name: 'Kiosk_Financial_Report_${DateTime.now().millisecondsSinceEpoch}.csv'
       );
       
-      // 3. Share it. Web will download it. Android will open the share sheet.
       await Share.shareXFiles([xFile], text: 'Kiosk Financial Export');
       
     } catch (e) {
