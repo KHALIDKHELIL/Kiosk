@@ -101,6 +101,13 @@ Run the App
     flutter run
 
 
+
+> **Note for Developers:** This repository does not include the `firebase_options.dart` or `google-services.json` files for security reasons. To run this app locally:
+> 1. Create your own project in the Firebase Console.
+> 2. Run `flutterfire configure` in your terminal to generate your own configuration files.
+> 3. Enable Firestore and Firebase Authentication in your console.
+
+
 👨‍💻 Author
 
 Developed and maintained by KHALIDKHELIL

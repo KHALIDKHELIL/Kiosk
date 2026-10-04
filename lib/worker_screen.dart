@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'main.dart';
+import 'telegram_service.dart'; // NEW: Imports the notification service
 
 final inventoryProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
   return FirebaseFirestore.instance.collection('inventory').where('is_active', isEqualTo: true).snapshots()
@@ -30,7 +31,7 @@ class WorkerScreen extends ConsumerStatefulWidget {
 
 class _WorkerScreenState extends ConsumerState<WorkerScreen> {
   String? selectedItemId;
-  TextEditingController? searchController; // NEW: Controls the Search field
+  TextEditingController? searchController; 
   final TextEditingController priceController = TextEditingController();
   String paymentMethod = 'Cash';
   bool isSubmitting = false;
@@ -105,6 +106,18 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
         'stock_quantity': FieldValue.increment(-quantity)
       });
 
+      // ==========================================
+      // NEW: FIRE TELEGRAM ALERT FOR SALE
+      // ==========================================
+      TelegramNotifier.sendNotification(
+        "✅ *New Sale Logged!*\n"
+        "👷 Worker: $sellerName\n"
+        "📦 Item: ${selectedItemData['name']}\n"
+        "🔢 Qty: $quantity\n"
+        "💰 Price: $finalPrice ETB\n"
+        "💳 Method: $paymentMethod"
+      );
+
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(finalPrice < totalBaseCost ? 'Admin Override: Logged at a loss.' : 'Sale logged successfully!'), 
         backgroundColor: finalPrice < totalBaseCost ? Colors.orange : Colors.green
@@ -113,7 +126,7 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
       setState(() { 
         selectedItemId = null; 
         priceController.clear(); 
-        searchController?.clear(); // Clears the search box
+        searchController?.clear(); 
         quantity = 1; 
       });
     } finally {
@@ -128,6 +141,12 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
       await FirebaseFirestore.instance.collection('inventory').doc(itemId).set({
         'stock_quantity': FieldValue.increment(qty)
       }, SetOptions(merge: true));
+      
+      // ==========================================
+      // NEW: FIRE TELEGRAM ALERT FOR VOID
+      // ==========================================
+      TelegramNotifier.sendNotification("⚠️ *Transaction Voided*\nA worker has cancelled a recent sale and restored $qty stock.");
+      
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transaction voided and stock returned.'), backgroundColor: Colors.blue));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error voiding: $e'), backgroundColor: Colors.red));
@@ -179,13 +198,26 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
               }
 
               final currentUser = FirebaseAuth.instance.currentUser;
+              final workerEmail = currentUser?.email?.split('@')[0] ?? 'Unknown';
+
               await FirebaseFirestore.instance.collection('expenses').add({
                 'timestamp': FieldValue.serverTimestamp(),
-                'worker_id': currentUser?.email?.split('@')[0] ?? 'Unknown',
+                'worker_id': workerEmail,
                 'category': category,
                 'amount': amount,
                 'reason': reasonCtrl.text.trim(),
               });
+              
+              // ==========================================
+              // NEW: FIRE TELEGRAM ALERT FOR EXPENSES
+              // ==========================================
+              TelegramNotifier.sendNotification(
+                "💸 *New Expense Logged!*\n"
+                "👷 Worker: $workerEmail\n"
+                "🗂 Category: $category\n"
+                "💵 Amount: $amount ETB\n"
+                "📝 Reason: ${reasonCtrl.text.isEmpty ? 'N/A' : reasonCtrl.text.trim()}"
+              );
               
               if (ctx.mounted) Navigator.pop(ctx);
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Expense logged successfully.'), backgroundColor: Colors.green));
@@ -389,9 +421,6 @@ class _WorkerScreenState extends ConsumerState<WorkerScreen> {
                                       const Text('New Transaction', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                                       const SizedBox(height: 24),
                                       
-                                      // ==========================================
-                                      // SEARCHABLE INVENTORY UPGRADE
-                                      // ==========================================
                                       Autocomplete<Map<String, dynamic>>(
                                         displayStringForOption: (item) => item['name'] as String,
                                         optionsBuilder: (TextEditingValue textEditingValue) {

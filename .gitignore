@@ -44,7 +44,21 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Firebase configuration & secrets
+# Firebase setup and secrets
 lib/firebase_options.dart
-*.env
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+macos/Runner/GoogleService-Info.plist
+
+# Android Signing keys
+*.jks
+*.keystore
+android/key.properties
+
+# Environment variables
+.env
 serviceAccountKey.json
+
+lib/secrets.dart
+
+seed_data.json
